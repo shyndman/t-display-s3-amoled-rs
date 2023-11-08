@@ -9,12 +9,14 @@ use embedded_graphics::{
     Pixel,
 };
 use embedded_hal_1::{delay::DelayUs, digital::OutputPin};
-use hal::gdma::SuitablePeripheral0;
-use hal::{
-    dma::{Rx, Tx},
+use esp_hal_common::{
+    dma::{ChannelTypes, SpiPeripheral},
     peripherals::SPI2,
-    prelude::_esp_hal_dma_DmaTransfer,
-    spi::{dma::SpiDma, Address, Command, HalfDuplexMode, SpiDataMode},
+    prelude::*,
+    spi::{
+        master::{dma::SpiDma, Address, Command},
+        HalfDuplexMode, SpiDataMode,
+    },
 };
 
 use crate::rm67162::Orientation;
@@ -25,22 +27,25 @@ const BUFFER_PIXELS: usize = 16368 / 2;
 const BUFFER_SIZE: usize = BUFFER_PIXELS * 2;
 static mut DMA_BUFFER: [u8; BUFFER_SIZE] = [0u8; BUFFER_SIZE];
 
-pub struct RM67162Dma<'a, TX: Tx, RX: Rx, CS> {
-    spi: Option<SpiDma<'a, SPI2, TX, RX, SuitablePeripheral0, HalfDuplexMode>>,
+pub struct RM67162Dma<'a, C: ChannelTypes, CS>
+where
+    C::P: SpiPeripheral,
+{
+    spi: Option<SpiDma<'a, esp_hal_common::peripherals::SPI2, C, HalfDuplexMode>>,
     cs: CS,
     orientation: Orientation,
 }
 
-impl<TX, RX, CS> RM67162Dma<'_, TX, RX, CS>
+impl<C, CS> RM67162Dma<'_, C, CS>
 where
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
     CS: OutputPin,
-    TX: Tx,
-    RX: Rx,
 {
     pub fn new<'a>(
-        spi: SpiDma<'a, SPI2, TX, RX, SuitablePeripheral0, HalfDuplexMode>,
+        spi: SpiDma<'a, SPI2, C, HalfDuplexMode>,
         cs: CS,
-    ) -> RM67162Dma<'a, TX, RX, CS> {
+    ) -> RM67162Dma<'a, C, CS> {
         RM67162Dma {
             spi: Some(spi),
             cs,
@@ -50,11 +55,14 @@ where
 
     pub fn set_orientation(&mut self, orientation: Orientation) -> Result<(), ()> {
         self.orientation = orientation;
-
         self.send_cmd(0x36, &[self.orientation.to_madctr()])
     }
 
-    pub fn reset(&self, rst: &mut impl OutputPin, delay: &mut impl DelayUs) -> Result<(), ()> {
+    pub fn reset(
+        &self,
+        rst: &mut impl OutputPin,
+        delay: &mut impl DelayUs,
+    ) -> Result<(), ()> {
         rst.set_low().unwrap();
         delay.delay_ms(300);
 
@@ -77,15 +85,20 @@ where
                 txbuf,
             )
             .unwrap();
-        (_, spi) = tx.wait();
+        (_, spi) = match tx.wait() {
+            Ok(tup) => tup,
+            Err(_) => panic!(),
+        };
         self.spi.replace(spi);
-
         self.cs.set_high().unwrap();
         Ok(())
     }
 
     // rm67162_qspi_init
-    pub fn init(&mut self, delay: &mut impl embedded_hal_1::delay::DelayUs) -> Result<(), ()> {
+    pub fn init(
+        &mut self,
+        delay: &mut impl embedded_hal_1::delay::DelayUs,
+    ) -> Result<(), ()> {
         for _ in 0..3 {
             self.send_cmd(0x11, &[])?; // sleep out
             delay.delay_ms(120);
@@ -145,7 +158,10 @@ where
                 txbuf,
             )
             .unwrap();
-        (_, spi) = tx.wait();
+        (_, spi) = match tx.wait() {
+            Ok(tup) => tup,
+            Err(_) => panic!(),
+        };
         self.spi.replace(spi);
 
         self.cs.set_high().unwrap();
@@ -153,7 +169,11 @@ where
     }
 
     #[inline]
-    fn dma_send_colors(&mut self, txbuf: StaticReadBuffer, first_send: bool) -> Result<(), ()> {
+    fn dma_send_colors(
+        &mut self,
+        txbuf: StaticReadBuffer,
+        first_send: bool,
+    ) -> Result<(), ()> {
         let mut spi = self.spi.take().unwrap();
 
         let tx = if first_send {
@@ -169,7 +189,10 @@ where
             spi.write(SpiDataMode::Quad, Command::None, Address::None, 0, txbuf)
                 .unwrap()
         };
-        (_, spi) = tx.wait();
+        (_, spi) = match tx.wait() {
+            Ok(tup) => tup,
+            Err(_) => panic!(),
+        };
         self.spi.replace(spi);
         Ok(())
     }
@@ -239,7 +262,8 @@ where
 
         for color in colors.into_iter().take(w as usize * h as usize) {
             if i == BUFFER_PIXELS {
-                let txbuf = StaticReadBuffer::new(unsafe { DMA_BUFFER.as_ptr() }, BUFFER_SIZE);
+                let txbuf =
+                    StaticReadBuffer::new(unsafe { DMA_BUFFER.as_ptr() }, BUFFER_SIZE);
 
                 self.dma_send_colors(txbuf, first_send)?;
                 first_send = false;
@@ -259,16 +283,23 @@ where
         Ok(())
     }
 
-    fn fill_color(&mut self, x: u16, y: u16, w: u16, h: u16, color: Rgb565) -> Result<(), ()> {
+    fn fill_color(
+        &mut self,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        color: Rgb565,
+    ) -> Result<(), ()> {
         self.fill_colors(x, y, w, h, iter::repeat(color))?;
         Ok(())
     }
 }
 
-impl<TX, RX, CS> OriginDimensions for RM67162Dma<'_, TX, RX, CS>
+impl<C, CS> OriginDimensions for RM67162Dma<'_, C, CS>
 where
-    TX: Tx,
-    RX: Rx,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
     CS: OutputPin,
 {
     fn size(&self) -> Size {
@@ -283,10 +314,10 @@ where
     }
 }
 
-impl<TX, RX, CS> DrawTarget for RM67162Dma<'_, TX, RX, CS>
+impl<C, CS> DrawTarget for RM67162Dma<'_, C, CS>
 where
-    TX: Tx,
-    RX: Rx,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
     CS: OutputPin,
 {
     type Color = Rgb565;
@@ -307,7 +338,11 @@ where
         Ok(())
     }
 
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+    fn fill_solid(
+        &mut self,
+        area: &Rectangle,
+        color: Self::Color,
+    ) -> Result<(), Self::Error> {
         self.fill_color(
             area.top_left.x as u16,
             area.top_left.y as u16,

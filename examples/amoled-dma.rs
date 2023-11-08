@@ -5,24 +5,22 @@ extern crate alloc;
 
 use alloc::string::String;
 use core::fmt::Write;
-use embedded_graphics::mono_font::ascii::FONT_10X20;
-use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Alignment, Text};
-use esp_backtrace as _;
-use esp_println::println;
-use hal::gpio::NO_PIN;
-use hal::prelude::_fugit_RateExtU32;
-use hal::systimer::SystemTimer;
-use hal::{
-    adc::{AdcConfig, Attenuation, ADC, ADC1},
-    clock::ClockControl,
-    peripherals::Peripherals,
+
+use embedded_graphics::{
+    mono_font::{ascii::FONT_10X20, MonoTextStyle, MonoTextStyleBuilder},
+    pixelcolor::Rgb565,
     prelude::*,
-    timer::TimerGroup,
-    Delay, Rtc, Spi, IO,
+    text::{Alignment, Text},
 };
+use esp_backtrace as _;
+use esp_hal_common::prelude::*;
+use esp_println::println;
+use hal::{
+    clock::ClockControl, dma::DmaPriority, gdma::Gdma, gpio::NO_PIN,
+    peripherals::Peripherals, prelude::_fugit_RateExtU32, spi::master::prelude::*,
+    systimer::SystemTimer, timer::TimerGroup, Delay, Rtc, IO,
+};
+use t_display_s3_amoled::rm67162::Orientation;
 #[global_allocator]
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
 
@@ -49,30 +47,20 @@ fn init_heap() {
 fn main() -> ! {
     init_heap();
     let peripherals = Peripherals::take();
-    let mut system = peripherals.SYSTEM.split();
+    let  system = peripherals.SYSTEM.split();
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     // Disable the RTC and TIMG watchdog timers
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
-    let timer_group0 = TimerGroup::new(
-        peripherals.TIMG0,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks);
     let mut wdt0 = timer_group0.wdt;
-    let timer_group1 = TimerGroup::new(
-        peripherals.TIMG1,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group1 = TimerGroup::new(peripherals.TIMG1, &clocks);
     let mut wdt1 = timer_group1.wdt;
     rtc.rwdt.disable();
     wdt0.disable();
     wdt1.disable();
-    println!("Hello world!");
+    println!("Hello board!");
 
-    // Initialize the Delay peripheral, and use it to toggle the LED state in a
-    // loop.
     let mut delay = Delay::new(&clocks);
 
     // Set GPIO4 as an output, and set its state high initially.
@@ -80,7 +68,12 @@ fn main() -> ! {
     let mut led = io.pins.gpio38.into_push_pull_output();
     //let user_btn = io.pins.gpio21.into_pull_down_input();
     //let boot0_btn = io.pins.gpio0.into_pull_up_input(); // default pull up
+
+    led.set_high().unwrap();
+
     println!("GPIO init OK");
+
+    println!("init display");
 
     let sclk = io.pins.gpio47;
     let rst = io.pins.gpio17;
@@ -91,11 +84,17 @@ fn main() -> ! {
     let d2 = io.pins.gpio48;
     let d3 = io.pins.gpio5;
 
+    let mut cs = cs.into_push_pull_output();
+    cs.set_high().unwrap();
+
     let mut rst = rst.into_push_pull_output();
 
-    led.set_high().unwrap();
+    let dma = Gdma::new(peripherals.DMA);
+    let dma_channel = dma.channel0;
 
-    let spi = Spi::new_half_duplex(
+    // Descriptors should be sized as (BUFFERSIZE / 4092) * 3
+    let mut descriptors = [0u32; 12];
+    let spi = hal::spi::master::Spi::new_half_duplex(
         peripherals.SPI2, // use spi2 host
         Some(sclk),
         Some(d0),
@@ -103,26 +102,25 @@ fn main() -> ! {
         Some(d2),
         Some(d3),
         NO_PIN,       // Some(cs), NOTE: manually control cs
-        85_u32.MHz(), // max 75MHz
+        75_u32.MHz(), // max 75MHz
         hal::spi::SpiMode::Mode0,
-        &mut system.peripheral_clock_control,
         &clocks,
-    );
+    )
+    .with_dma(dma_channel.configure(
+        false,
+        &mut descriptors,
+        &mut [],
+        DmaPriority::Priority0,
+    ));
 
-    let mut cs = cs.into_push_pull_output();
-    cs.set_high().unwrap();
-
-    let mut display = t_display_s3_amoled::rm67162::RM67162::new(spi, cs);
+    let mut display = t_display_s3_amoled::rm67162::dma::RM67162Dma::new(spi, cs);
     display.reset(&mut rst, &mut delay).unwrap();
-    println!("reset display");
     display.init(&mut delay).unwrap();
     display
-        .set_orientation(t_display_s3_amoled::rm67162::Orientation::LandscapeFlipped)
+        .set_orientation(Orientation::LandscapeFlipped)
         .unwrap();
 
-    println!("init display");
-
-    display.clear(Rgb565::WHITE).unwrap();
+    display.clear(Rgb565::YELLOW).unwrap();
     println!("screen init ok");
 
     let character_style = MonoTextStyle::new(&FONT_10X20, Rgb565::RED);
@@ -141,7 +139,6 @@ fn main() -> ! {
     loop {
         // fps testing
         let mut s = String::new();
-
         let elapsed = now_ms() - started;
         core::write!(
             &mut s,

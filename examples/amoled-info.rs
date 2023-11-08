@@ -5,21 +5,26 @@ extern crate alloc;
 
 use alloc::string::String;
 use core::fmt::Write;
-use embedded_graphics::mono_font::ascii::FONT_10X20;
-use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Alignment, Text};
+
+use embedded_graphics::{
+    mono_font::{ascii::FONT_10X20, MonoTextStyle, MonoTextStyleBuilder},
+    pixelcolor::Rgb565,
+    prelude::*,
+    text::{Alignment, Text},
+};
 use esp_backtrace as _;
+use esp_hal_common::spi::master::{prelude::*, Spi};
 use esp_println::println;
-use hal::dma::DmaPriority;
-use hal::gdma::Gdma;
-use hal::gpio::NO_PIN;
-use hal::prelude::_fugit_RateExtU32;
-use hal::systimer::SystemTimer;
 use hal::{
-    clock::ClockControl, peripherals::Peripherals, prelude::*, timer::TimerGroup, Delay, Rtc, Spi,
-    IO,
+    adc::{AdcConfig, Attenuation, ADC, ADC2},
+    clock::ClockControl,
+    dma::DmaPriority,
+    gdma::Gdma,
+    gpio::NO_PIN,
+    peripherals::Peripherals,
+    prelude::{_fugit_RateExtU32, *},
+    timer::TimerGroup,
+    Delay, Rtc, IO,
 };
 use t_display_s3_amoled::rm67162::Orientation;
 #[global_allocator]
@@ -48,22 +53,14 @@ fn init_heap() {
 fn main() -> ! {
     init_heap();
     let peripherals = Peripherals::take();
-    let mut system = peripherals.SYSTEM.split();
+    let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     // Disable the RTC and TIMG watchdog timers
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
-    let timer_group0 = TimerGroup::new(
-        peripherals.TIMG0,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks);
     let mut wdt0 = timer_group0.wdt;
-    let timer_group1 = TimerGroup::new(
-        peripherals.TIMG1,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group1 = TimerGroup::new(peripherals.TIMG1, &clocks);
     let mut wdt1 = timer_group1.wdt;
     rtc.rwdt.disable();
     wdt0.disable();
@@ -98,7 +95,7 @@ fn main() -> ! {
 
     let mut rst = rst.into_push_pull_output();
 
-    let dma = Gdma::new(peripherals.DMA, &mut system.peripheral_clock_control);
+    let dma = Gdma::new(peripherals.DMA);
     let dma_channel = dma.channel0;
 
     // Descriptors should be sized as (BUFFERSIZE / 4092) * 3
@@ -113,10 +110,14 @@ fn main() -> ! {
         NO_PIN,       // Some(cs), NOTE: manually control cs
         75_u32.MHz(), // max 75MHz
         hal::spi::SpiMode::Mode0,
-        &mut system.peripheral_clock_control,
         &clocks,
     )
-    .with_dma(dma_channel.configure(false, &mut descriptors, &mut [], DmaPriority::Priority0));
+    .with_dma(dma_channel.configure(
+        false,
+        &mut descriptors,
+        &mut [],
+        DmaPriority::Priority0,
+    ));
 
     let mut display = t_display_s3_amoled::rm67162::dma::RM67162Dma::new(spi, cs);
     display.reset(&mut rst, &mut delay).unwrap();
@@ -125,37 +126,50 @@ fn main() -> ! {
         .set_orientation(Orientation::LandscapeFlipped)
         .unwrap();
 
-    display.clear(Rgb565::YELLOW).unwrap();
+    display.clear(Rgb565::BLACK).unwrap();
     println!("screen init ok");
+
+    // Create ADC instances
+    let analog = peripherals.SENS.split();
+    let mut adc_config = AdcConfig::new();
+    let mut vbat_pin =
+        adc_config.enable_pin(io.pins.gpio12.into_analog(), Attenuation::Attenuation11dB);
+    let mut adc1 = ADC::<ADC2>::adc(analog.adc2, adc_config).unwrap();
+
+    println!("ADC init OK");
 
     let character_style = MonoTextStyle::new(&FONT_10X20, Rgb565::RED);
     Text::with_alignment(
         "Hello,\nRust World!",
-        Point::new(300, 20),
+        Point::new(300, 40),
         character_style,
         Alignment::Center,
     )
     .draw(&mut display)
     .unwrap();
 
-    let mut cnt = 0;
-    let started = now_ms();
-
     loop {
         // fps testing
         let mut s = String::new();
-        let elapsed = now_ms() - started;
-        core::write!(
-            &mut s,
-            "Frames: {}\nFPS: {:.1}",
-            cnt,
-            if elapsed > 0 {
-                cnt as f32 / (elapsed as f32 / 1000.0)
-            } else {
-                0.0
-            }
-        )
-        .unwrap();
+
+        let raw_val: u16 = nb::block!(adc1.read(&mut vbat_pin)).unwrap();
+        let vbat = (raw_val as f32 / 4095.0) * 3.3 * (100.0 + 100.0) / 100.0;
+        core::write!(&mut s, "Vbat: {:.2}V\nRaw: {}", vbat, raw_val).unwrap();
+
+        /*
+            let elapsed = now_ms() - started;
+            core::write!(
+                &mut s,
+                "Frames: {}\nFPS: {:.1}",
+                cnt,
+                if elapsed > 0 {
+                    cnt as f32 / (elapsed as f32 / 1000.0)
+                } else {
+                    0.0
+                }
+            )
+            .unwrap();
+        */
         Text::with_alignment(
             &s,
             Point::new(100, 40),
@@ -168,10 +182,6 @@ fn main() -> ! {
         )
         .draw(&mut display)
         .unwrap();
-        cnt += 1;
+        delay.delay_ms(1000u32);
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTimer::now() * 1_000 / SystemTimer::TICKS_PER_SECOND
 }

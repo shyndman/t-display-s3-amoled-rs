@@ -5,7 +5,8 @@ extern crate alloc;
 use esp_backtrace as _;
 use esp_println::println;
 use hal::{
-    clock::ClockControl, peripherals::Peripherals, prelude::*, timer::TimerGroup, Delay, Rtc, IO,
+    clock::ClockControl, peripherals::Peripherals, prelude::*, timer::TimerGroup, Delay, Rtc,
+    IO,
 };
 #[global_allocator]
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
@@ -33,22 +34,14 @@ fn init_heap() {
 fn main() -> ! {
     init_heap();
     let peripherals = Peripherals::take();
-    let mut system = peripherals.SYSTEM.split();
+    let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     // Disable the RTC and TIMG watchdog timers
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
-    let timer_group0 = TimerGroup::new(
-        peripherals.TIMG0,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks);
     let mut wdt0 = timer_group0.wdt;
-    let timer_group1 = TimerGroup::new(
-        peripherals.TIMG1,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group1 = TimerGroup::new(peripherals.TIMG1, &clocks);
     let mut wdt1 = timer_group1.wdt;
     rtc.rwdt.disable();
     wdt0.disable();
@@ -58,7 +51,7 @@ fn main() -> ! {
     // Set GPIO4 as an output, and set its state high initially.
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
     let mut led = io.pins.gpio38.into_push_pull_output();
-    let mut button = io.pins.gpio21.into_pull_down_input();
+    let _button = io.pins.gpio21.into_pull_down_input();
 
     led.set_high().unwrap();
 

@@ -7,11 +7,11 @@ use embedded_graphics::{
     Pixel,
 };
 use embedded_hal_1::{delay::DelayUs, digital::OutputPin};
-use hal::{
-    peripherals::SPI2,
-    spi::{Address, Command, HalfDuplexMode, HalfDuplexReadWrite, SpiDataMode},
-    Spi,
+use esp_hal_common::spi::{
+    master::{Address, Command, HalfDuplexReadWrite},
+    HalfDuplexMode, SpiDataMode,
 };
+use hal::{peripherals::SPI2, spi::master::Spi};
 
 pub mod dma;
 
@@ -58,7 +58,11 @@ where
         self.send_cmd(0x36, &[self.orientation.to_madctr()])
     }
 
-    pub fn reset(&self, rst: &mut impl OutputPin, delay: &mut impl DelayUs) -> Result<(), ()> {
+    pub fn reset(
+        &self,
+        rst: &mut impl OutputPin,
+        delay: &mut impl DelayUs,
+    ) -> Result<(), ()> {
         rst.set_low().unwrap();
         delay.delay_ms(300);
 
@@ -83,7 +87,10 @@ where
     }
 
     // rm67162_qspi_init
-    pub fn init(&mut self, delay: &mut impl embedded_hal_1::delay::DelayUs) -> Result<(), ()> {
+    pub fn init(
+        &mut self,
+        delay: &mut impl embedded_hal_1::delay::DelayUs,
+    ) -> Result<(), ()> {
         for _ in 0..3 {
             self.send_cmd(0x11, &[])?; // sleep out
             delay.delay_ms(120);
@@ -176,7 +183,14 @@ where
         Ok(())
     }
 
-    fn fill_color(&mut self, x: u16, y: u16, w: u16, h: u16, color: Rgb565) -> Result<(), ()> {
+    fn fill_color(
+        &mut self,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        color: Rgb565,
+    ) -> Result<(), ()> {
         self.set_address(x, y, x + w - 1, y + h - 1)?;
         self.cs.set_low().unwrap();
         self.spi
@@ -242,7 +256,11 @@ where
         Ok(())
     }
 
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+    fn fill_solid(
+        &mut self,
+        area: &Rectangle,
+        color: Self::Color,
+    ) -> Result<(), Self::Error> {
         self.fill_color(
             area.top_left.x as u16,
             area.top_left.y as u16,

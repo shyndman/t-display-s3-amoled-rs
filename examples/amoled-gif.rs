@@ -3,25 +3,23 @@
 
 extern crate alloc;
 
-use alloc::string::String;
-use core::fmt::Write;
-use embedded_graphics::framebuffer::Framebuffer;
-use embedded_graphics::mono_font::ascii::FONT_10X20;
-use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
-use embedded_graphics::pixelcolor::raw::{BigEndian, LittleEndian};
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Alignment, Text};
+use embedded_graphics::{
+    framebuffer::Framebuffer,
+    pixelcolor::{raw::BigEndian, Rgb565},
+    prelude::*,
+};
 use esp_backtrace as _;
+use esp_hal_common::spi::master::{prelude::*, Spi};
 use esp_println::println;
-use hal::dma::DmaPriority;
-use hal::gdma::Gdma;
-use hal::gpio::NO_PIN;
-use hal::prelude::_fugit_RateExtU32;
-use hal::systimer::SystemTimer;
 use hal::{
-    clock::ClockControl, peripherals::Peripherals, prelude::*, timer::TimerGroup, Delay, Rtc, Spi,
-    IO,
+    clock::ClockControl,
+    dma::DmaPriority,
+    gdma::Gdma,
+    gpio::NO_PIN,
+    peripherals::Peripherals,
+    prelude::{_fugit_RateExtU32, *},
+    timer::TimerGroup,
+    Delay, Rtc, IO,
 };
 use t_display_s3_amoled::rm67162::Orientation;
 #[global_allocator]
@@ -50,22 +48,14 @@ fn init_heap() {
 fn main() -> ! {
     init_heap();
     let peripherals = Peripherals::take();
-    let mut system = peripherals.SYSTEM.split();
+    let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     // Disable the RTC and TIMG watchdog timers
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
-    let timer_group0 = TimerGroup::new(
-        peripherals.TIMG0,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks);
     let mut wdt0 = timer_group0.wdt;
-    let timer_group1 = TimerGroup::new(
-        peripherals.TIMG1,
-        &clocks,
-        &mut system.peripheral_clock_control,
-    );
+    let timer_group1 = TimerGroup::new(peripherals.TIMG1, &clocks);
     let mut wdt1 = timer_group1.wdt;
     rtc.rwdt.disable();
     wdt0.disable();
@@ -100,7 +90,7 @@ fn main() -> ! {
 
     let mut rst = rst.into_push_pull_output();
 
-    let dma = Gdma::new(peripherals.DMA, &mut system.peripheral_clock_control);
+    let dma = Gdma::new(peripherals.DMA);
     let dma_channel = dma.channel0;
 
     // Descriptors should be sized as (BUFFERSIZE / 4092) * 3
@@ -115,10 +105,14 @@ fn main() -> ! {
         NO_PIN,       // Some(cs), NOTE: manually control cs
         75_u32.MHz(), // max 75MHz
         hal::spi::SpiMode::Mode0,
-        &mut system.peripheral_clock_control,
         &clocks,
     )
-    .with_dma(dma_channel.configure(false, &mut descriptors, &mut [], DmaPriority::Priority0));
+    .with_dma(dma_channel.configure(
+        false,
+        &mut descriptors,
+        &mut [],
+        DmaPriority::Priority0,
+    ));
 
     let mut display = t_display_s3_amoled::rm67162::dma::RM67162Dma::new(spi, cs);
     display.reset(&mut rst, &mut delay).unwrap();
@@ -130,7 +124,7 @@ fn main() -> ! {
     display.clear(Rgb565::WHITE).unwrap();
     println!("screen init ok");
 
-    let gif = tinygif::Gif::from_slice(include_bytes!("../../ferris.gif")).unwrap();
+    let gif = tinygif::Gif::from_slice(include_bytes!("../ferris.gif")).unwrap();
 
     let mut fb = Framebuffer::<
         Rgb565,
@@ -140,7 +134,7 @@ fn main() -> ! {
         240,
         { embedded_graphics::framebuffer::buffer_size::<Rgb565>(536, 240) },
     >::new();
-    fb.clear(Rgb565::WHITE);
+    fb.clear(Rgb565::WHITE).unwrap();
 
     loop {
         for frame in gif.frames() {
