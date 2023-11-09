@@ -24,18 +24,17 @@ esp-alloc = {version = "0.3.0"}
 hal = {package = "esp32s3-hal", version = "0.13.0", features = [
   "async",
   "embassy",
-  "embassy-time-timg0",
   "rt",
 ]}
 esp-hal-common = "0.13.1"
+tinygif = "0.0.4"
+
+[dev-dependencies]
 slint = {version = "1.0.2", default-features = false, features = [
   "compat-1-0",
   "libm",
   "unsafe-single-threaded",
 ]}
-tinygif = "0.0.4"
-
-[dev-dependencies]
 esp-println = {version = "0.7.0", default-features = false, features = [
   "esp32s3",
   "log",
@@ -52,4 +51,6 @@ esp-backtrace = {version = "0.9.0", default-features = false, features = [
 slint-build = "1.0.0"
 
 [features]
-default = []
+default = ["embassy-time-systick"]
+embassy-time-timg0 = ["hal/embassy-time-timg0"]
+embassy-time-systick = ["hal/embassy-time-systick"]
