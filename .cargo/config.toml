@@ -8,8 +8,5 @@ rustflags = [
   "-C", "link-arg=-nostartfiles",
 ]
 
-[env]
-ESP_LOGLEVEL="INFO"
-
 [unstable]
 build-std = ["alloc", "core"]
